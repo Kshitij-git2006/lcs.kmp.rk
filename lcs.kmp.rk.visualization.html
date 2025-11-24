@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LCS & KMP & RK Algorithm Visualization</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for table container */
+        .table-container {
+            max-width: 100%;
+            overflow-x: auto;
+            border-radius: 0.5rem;
+            box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+            border: 1px solid #e5e7eb;
+            position: relative;
+        }
+        .dp-table, .kmp-step-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            min-width: 600px; /* Ensure wide enough for structure */
+        }
+        .dp-table th, .dp-table td, .kmp-step-table th, .kmp-step-table td {
+            padding: 0.5rem;
+            border: 1px solid #e5e7eb;
+            text-align: center;
+            font-size: 0.875rem; /* text-sm */
+        }
+        .dp-table th, .kmp-step-table th {
+            background-color: #f3f4f6;
+            font-weight: 600;
+        }
+        .dp-table td.matched {
+            background-color: #d1fae5; /* Light green for LCS matches */
+            font-weight: 700;
+        }
+        /* KMP specific highlights */
+        .kmp-step-table td.match-cell {
+            background-color: #d1fae5;
+        }
+        .kmp-step-table td.shift-cell {
+            background-color: #fef3c7; /* Light yellow for shifts/advances */
+        }
+        /* RK specific highlights */
+        .rk-full-match {
+            background-color: #d1fae5; /* Green for real match */
+        }
+        .rk-spurious-hit {
+            background-color: #fee2e2; /* Red for false positive */
+        }
+        .rk-hash-match {
+            background-color: #fef3c7; /* Yellow for hash match before character check */
+        }
+        .lcs-result-grid {
+            columns: 2; /* Two columns for wide screens */
+            column-gap: 2rem;
+        }
+        @media (max-width: 640px) {
+            .lcs-result-grid {
+                columns: 1; /* One column on small screens */
+            }
+        }
+    </style>
+    <script>
+        // Wrap all code in an IIFE (Immediately Invoked Function Expression) 
+        // to prevent global variable pollution and redeclaration errors.
+        (function() {
+            let currentMode = 'LCS'; // Global state for mode
+
+            // --- CORE RABIN-KARP LOGIC ---
+
+            /**
+             * Performs Rabin-Karp search and records every step for visualization.
+             * Now accepts dynamic Base (D), Modulus (Q), and a custom Character Map.
+             */
+            function RabinKarpSearch(T, P, D, Q, charMap) {
+                const n = T.length;
+                const m = P.length;
+                const steps = [];
+                let p_hash = 0; // hash value for pattern
+                let t_hash = 0; // hash value for text substring
+                let h = 1; // D^(m-1) % Q
+                let matches = [];
+
+                if (m === 0 || n === 0 || m > n) {
+                    return { steps: [], matches: [] };
+                }
+
+                // 1. Calculate h = (D^(m-1)) % Q (coefficient for the most significant digit)
+                for (let i = 0; i < m - 1; i++) {
+                    h = (h * D) % Q;
+                }
+
+                // 2. Calculate initial hash for pattern (p_hash) and first window of text (t_hash)
+                // Use the custom charMap instead of ASCII
+                for (let i = 0; i < m; i++) {
+                    const p_val = charMap[P[i].toLowerCase()];
+                    const t_val = charMap[T[i].toLowerCase()];
+                    p_hash = (p_hash * D + p_val) % Q;
+                    t_hash = (t_hash * D + t_val) % Q;
+                }
+
+                // Record initial hash setup
+                steps.push({
+                    i: -1, // Sentinel index for initial step
+                    substring: T.substring(0, m),
+                    p_hash,
+                    t_hash,
+                    action: 'Initial Hash Calculation',
+                    detail: `Pattern Hash: ${p_hash}. Text Hash (T[0...${m-1}]): ${t_hash}.`
+                });
+
+                // 3. Slide the window over the text
+                for (let i = 0; i <= n - m; i++) {
+                    let action = 'Hash Mismatch';
+                    let detail = `Pattern Hash (${p_hash}) != Text Hash (${t_hash}). Rolling hash for next window.`;
+                    
+                    // 3a: Check for a Hash Match
+                    if (p_hash === t_hash) {
+                        action = 'Hash Match (Possible Hit)';
+                        detail = `Pattern Hash (${p_hash}) == Text Hash (${t_hash}). Starting character comparison.`;
+                        
+                        // 3b: If hashes match, perform a character-by-character check (Sloppy Match)
+                        let j;
+                        for (j = 0; j < m; j++) {
+                            // Use toLowerCase for case-insensitivity
+                            if (P[j].toLowerCase() !== T[i + j].toLowerCase()) {
+                                break;
+                            }
+                        }
+
+                        if (j === m) {
+                            // Real match found
+                            action = 'FULL MATCH';
+                            detail = `Full match confirmed at index ${i}.`;
+                            matches.push(i);
+                        } else {
+                            // Hash matched, but characters didn't (Spurious Hit/False Positive)
+                             action = 'Spurious Hit';
+                             detail = `Hash matched, but character comparison failed at offset ${j}. This is a False Positive.`;
+                        }
+                    }
+                    
+                    // Record the current step before rolling/shifting the window
+                    steps.push({
+                        i,
+                        substring: T.substring(i, i + m),
+                        p_hash,
+                        t_hash,
+                        action,
+                        detail
+                    });
+                    
+                    // 3c: Calculate hash for the next window (if not the last window)
+                    if (i < n - m) {
+                        const old_val = charMap[T[i].toLowerCase()];
+                        const new_val = charMap[T[i + m].toLowerCase()];
+                        
+                        // Calculate next hash: T_next = (D * (T_prev - T[i] * h) + T[i+m]) % Q
+                        
+                        // 1. Remove leading digit (T[i] * h)
+                        let new_t_hash = t_hash - (old_val * h);
+                        
+                        // Handle negative modulo (ensure the result is always positive)
+                        new_t_hash = new_t_hash % Q;
+                        if (new_t_hash < 0) {
+                            new_t_hash = new_t_hash + Q;
+                        }
+
+                        // 2. Multiply by base (D) and add trailing digit
+                        new_t_hash = (new_t_hash * D + new_val) % Q;
+
+                        t_hash = new_t_hash;
+                    }
+                }
+                
+                return { steps, matches };
+            }
+
+            // --- RK RENDERING ---
+
+            function renderRabinKarpSteps(T, P, steps, matches, D, Q, charMap) {
+                const tableContainer = document.getElementById('rk-steps-output');
+                const infoContainer = document.getElementById('rk-info-output');
+                
+                // --- 1. Render Hashing Details Info Box ---
+                // Sort keys by their mapped value
+                let sortedChars = Object.keys(charMap).sort((a,b) => charMap[a] - charMap[b]);
+                
+                let charTableRows = sortedChars.map(char => {
+                    let val = charMap[char];
+                    return `<tr><td class="border px-2 py-1 font-mono">${char}</td><td class="border px-2 py-1 font-bold text-indigo-700">${val}</td></tr>`;
+                }).join('');
+
+                let infoHtml = `
+                    <div class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                        <h3 class="text-lg font-bold text-blue-800 mb-2">Simplified Hashing Logic</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                                    <li><strong>Base (D):</strong> ${D} ${D===10 ? '<span class="text-green-600 font-bold">(Base 10 for readability)</span>' : ''}</li>
+                                    <li><strong>Modulus (Q):</strong> ${Q} (Prime Number)</li>
+                                    <li><strong>Formula:</strong> <code>Hash = (charValue * D^p) % Q</code></li>
+                                    <li><strong>Mapping:</strong> Using simplified integers instead of ASCII.</li>
+                                </ul>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold text-sm text-gray-600 mb-1">Character Map:</h4>
+                                <div class="max-h-32 overflow-y-auto">
+                                    <table class="w-full text-sm bg-white text-center">
+                                        <thead class="bg-gray-100">
+                                            <tr><th>Char</th><th>Value</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            ${charTableRows}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                infoContainer.innerHTML = infoHtml;
+
+
+                // --- 2. Render Steps Table ---
+                if (steps.length <= 1) {
+                    tableContainer.innerHTML = `<p class="text-gray-500 mt-4">No steps to display (empty text, pattern, or text length &lt; pattern length).</p>`;
+                    return;
+                }
+
+                let html = `
+                    <h3 class="text-xl font-semibold text-gray-700 mt-4 mb-3">Rabin-Karp Search Steps</h3>
+                    <div class="table-container">
+                        <table class="kmp-step-table bg-white">
+                            <thead>
+                                <tr>
+                                    <th class="sticky left-0 bg-gray-200 z-10 w-1/12">Index (i)</th>
+                                    <th class="w-3/12">Current Window</th>
+                                    <th class="w-1/12">Text Hash</th>
+                                    <th class="w-1/12">Pattern Hash</th>
+                                    <th class="w-2/12">Action</th>
+                                    <th class="w-4/12 text-left">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+                
+                // Skip the first step which is just hash calculation setup
+                for (let index = 1; index < steps.length; index++) {
+                    const step = steps[index];
+                    
+                    let rowClass = '';
+                    if (step.action.includes('FULL MATCH')) {
+                        rowClass = 'rk-full-match';
+                    } else if (step.action.includes('Spurious Hit')) {
+                        rowClass = 'rk-spurious-hit';
+                    } else if (step.action.includes('Hash Match')) {
+                        rowClass = 'rk-hash-match';
+                    }
+
+                    // Highlight the current window in the text string
+                    const pre = T.substring(0, step.i);
+                    const window_sub = T.substring(step.i, step.i + P.length);
+                    const post = T.substring(step.i + P.length);
+                    
+                    const T_vis = `<span class="font-mono text-gray-400">${pre}</span><span class="font-mono text-lg font-bold ${rowClass ? 'text-indigo-900' : 'text-indigo-600'}">${window_sub}</span><span class="font-mono text-gray-400">${post}</span>`;
+
+
+                    html += `
+                        <tr class="${rowClass}">
+                            <td class="sticky left-0 ${rowClass ? rowClass : 'bg-white'} z-10 font-bold border-r">${step.i}</td>
+                            <td class="text-left overflow-hidden text-ellipsis whitespace-nowrap max-w-xs" title="${step.substring}">${T_vis}</td>
+                            <td class="font-mono ${step.p_hash === step.t_hash ? 'text-green-700 font-bold' : ''}">${step.t_hash}</td>
+                            <td class="font-mono">${step.p_hash}</td>
+                            <td class="font-bold">${step.action}</td>
+                            <td class="text-left text-sm">${step.detail}</td>
+                        </tr>
+                    `;
+                }
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-4 p-4 bg-indigo-100 rounded-lg">
+                        <p class="font-bold text-indigo-700">Summary:</p>
+                        ${matches.length > 0 
+                            ? `<p>Found ${matches.length} full match(es) starting at Text indices: ${matches.join(', ')}</p>` 
+                            : `<p>No full match found.</p>`}
+                    </div>
+                `;
+                tableContainer.innerHTML = html;
+            }
+
+            function runRKSolver() {
+                const T = document.getElementById('rk-text').value.trim();
+                const P = document.getElementById('rk-pattern').value.trim();
+                
+                document.getElementById('rk-steps-output').innerHTML = '';
+                document.getElementById('rk-info-output').innerHTML = ''; // Clear info box
+
+                if (!T || !P) {
+                    document.getElementById('rk-steps-output').innerHTML = '<p class="text-red-500 font-medium">Please enter both the Text and the Pattern.</p>';
+                    return;
+                }
+                
+                if (T.length < P.length) {
+                    document.getElementById('rk-steps-output').innerHTML = '<p class="text-red-500 font-medium">Pattern length cannot exceed Text length.</p>';
+                    return;
+                }
+
+                // --- Generate Custom Map for Simplified Values ---
+                // 1. Get all unique characters from both Text and Pattern (case-insensitive)
+                const uniqueChars = Array.from(new Set((T + P).toLowerCase().split(''))).sort();
+                
+                // 2. Create map: 'a' -> 1, 'b' -> 2, etc.
+                const charMap = {};
+                uniqueChars.forEach((c, index) => {
+                    charMap[c] = index + 1; // Assign 1, 2, 3...
+                });
+
+                // 3. Determine Base D
+                // Use 10 if we have fewer than 10 unique chars to make the math look like base-10 concatenation
+                // Otherwise use unique_count + 1 to ensure a valid mathematical base
+                let D = uniqueChars.length < 10 ? 10 : uniqueChars.length + 1;
+                const Q = 101; // Constant prime
+
+                const { steps, matches } = RabinKarpSearch(T, P, D, Q, charMap);
+                
+                renderRabinKarpSteps(T, P, steps, matches, D, Q, charMap);
+            }
+
+            // --- CORE KMP LOGIC ---
+
+            /**
+             * Computes the Longest Proper Prefix which is also a Suffix (LPS) array for the pattern.
+             */
+            function computeLPSArray(P) {
+                const m = P.length;
+                const lps = new Array(m).fill(0);
+                let len = 0; // length of the previous longest prefix suffix
+                let i = 1;
+
+                while (i < m) {
+                    if (P[i].toLowerCase() === P[len].toLowerCase()) {
+                        len++;
+                        lps[i] = len;
+                        i++;
+                    } else {
+                        if (len !== 0) {
+                            len = lps[len - 1];
+                        } else {
+                            lps[i] = 0;
+                            i++;
+                        }
+                    }
+                }
+                return lps;
+            }
+
+            /**
+             * Performs KMP search and records every step for visualization.
+             */
+            function KMPSearch(T, P) {
+                const n = T.length;
+                const m = P.length;
+                const steps = [];
+                let i = 0; // index for text T
+                let j = 0; // index for pattern P
+                const lps = computeLPSArray(P);
+                
+                if (m === 0 || n === 0) return { steps: [], lps: lps, matches: [] };
+                
+                let matches = [];
+
+                while (i < n) {
+                    let action = '';
+                    let step_details = '';
+                    let i_start = i;
+                    let j_start = j;
+
+                    if (P[j].toLowerCase() === T[i].toLowerCase()) {
+                        // Case 1: Match
+                        action = 'Match';
+                        step_details = `T[${i}] ('${T[i]}') matches P[${j}] ('${P[j]}').`;
+                        i++;
+                        j++;
+                    } else {
+                        // Case 2: Mismatch
+                        if (j !== 0) {
+                            // Shift the pattern using the LPS array
+                            action = 'Shift';
+                            step_details = `Mismatch at T[${i}] ('${T[i]}'). Shifting P using LPS[${j-1}]=${lps[j-1]}. j moves from ${j} to ${lps[j - 1]}.`;
+                            j = lps[j - 1]; 
+                        } else {
+                            // Mismatch at the first character of the pattern
+                            action = 'Advance T';
+                            step_details = `Mismatch at T[${i}] ('${T[i]}'). Pattern P cannot be shifted further. Advancing Text index i.`;
+                            i++;
+                        }
+                    }
+
+                    steps.push({ 
+                        i_start, 
+                        j_start, 
+                        i_end: i, 
+                        j_end: j, 
+                        action, 
+                        step_details, 
+                        T: T, 
+                        P: P 
+                    });
+
+                    // Check for full match discovery
+                    if (j === m) {
+                        const match_start_index = i - j;
+                        matches.push(match_start_index);
+                        
+                        const last_step = steps[steps.length - 1];
+                        last_step.action = 'Full Match';
+                        last_step.match_start = match_start_index;
+                        last_step.match_end = i - 1;
+                        last_step.step_details = `FULL MATCH found starting at Text index ${match_start_index}. Resetting j using LPS[${j-1}]=${lps[j-1]}.`;
+                        
+                        // For finding subsequent matches, shift the pattern
+                        j = lps[j - 1]; 
+                        last_step.j_end = j;
+                    }
+                }
+
+                return { steps, lps, matches };
+            }
+
+            // --- KMP RENDERING ---
+
+            function renderLPS(P, lps) {
+                let lpsHtml = `
+                    <div class="mt-6 p-4 bg-gray-100 rounded-lg shadow-inner">
+                        <h3 class="text-xl font-semibold text-gray-700 mb-3">1. LPS Array (Failure Function)</h3>
+                        <p class="text-sm text-gray-500 mb-3">LPS[i] is the length of the longest proper prefix of P[0...i] which is also a suffix of P[0...i].</p>
+                        <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
+                            <div class="flex flex-wrap font-mono text-center">
+                                <span class="w-8 p-1 bg-indigo-200 border border-indigo-300 rounded-l-lg font-bold">P:</span>
+                                ${P.split('').map((char, index) => `<span class="w-8 p-1 ${index === P.length - 1 ? 'rounded-r-lg' : ''} bg-indigo-50 border border-indigo-300">${char.toUpperCase()}</span>`).join('')}
+                            </div>
+                            <div class="flex flex-wrap font-mono text-center">
+                                <span class="w-8 p-1 bg-green-200 border border-green-300 rounded-l-lg font-bold">LPS:</span>
+                                ${lps.map((val, index) => `<span class="w-8 p-1 ${index === P.length - 1 ? 'rounded-r-lg' : ''} bg-green-50 border border-green-300">${val}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('kmp-lps-output').innerHTML = lpsHtml;
+            }
+
+            function renderKMPSteps(T, P, steps, matches) {
+                const tableContainer = document.getElementById('kmp-steps-output');
+                
+                if (steps.length === 0) {
+                    tableContainer.innerHTML = `<p class="text-gray-500 mt-4">No matching steps to display (empty text or pattern).</p>`;
+                    return;
+                }
+
+                let html = `
+                    <h3 class="text-xl font-semibold text-gray-700 mt-8 mb-3">2. Step-by-Step Matching Visualization</h3>
+                    <div class="table-container">
+                        <table class="kmp-step-table bg-white">
+                            <thead>
+                                <tr>
+                                    <th class="sticky left-0 bg-gray-200 z-10 w-1/12">Step</th>
+                                    <th class="w-2/12">Action</th>
+                                    <th class="w-1/12">i (Text)</th>
+                                    <th class="w-1/12">j (Pattern)</th>
+                                    <th class="w-4/12">Text (T)</th>
+                                    <th class="w-4/12">Pattern (P)</th>
+                                    <th class="w-4/12 text-left">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+                
+                steps.forEach((step, index) => {
+                    const isMatch = step.action.includes('Match');
+                    const isShift = step.action.includes('Shift') || step.action.includes('Advance');
+                    const rowClass = isMatch ? 'bg-green-50' : isShift ? 'bg-yellow-50' : '';
+
+                    // Generate T visualization (highlight current i)
+                    let T_vis = T.split('').map((c, idx) => 
+                        `<span class="font-mono ${idx === step.i_start ? 'text-red-600 font-bold underline' : ''}">${c}</span>`
+                    ).join('');
+                    if (step.action === 'Full Match') {
+                         T_vis = T.split('').map((c, idx) => 
+                            `<span class="font-mono ${idx >= step.match_start && idx <= step.match_end ? 'bg-yellow-300 font-bold' : ''}">${c}</span>`
+                        ).join('');
+                    }
+
+                    // Generate P visualization (align P under T)
+                    const offset = step.i_start - step.j_start;
+                    const patternPadding = ' '.repeat(offset);
+                    const P_vis = P.split('').map((c, idx) => 
+                        `<span class="font-mono ${idx === step.j_start ? 'text-red-600 font-bold underline' : ''}">${c}</span>`
+                    ).join('');
+                    
+                    html += `
+                        <tr class="${rowClass}">
+                            <td class="sticky left-0 ${rowClass ? rowClass : 'bg-white'} z-10 font-bold border-r">${index + 1}</td>
+                            <td class="font-bold">${step.action}</td>
+                            <td>${step.i_start} &rarr; ${step.i_end}</td>
+                            <td>${step.j_start} &rarr; ${step.j_end}</td>
+                            <td class="text-left">${T_vis}</td>
+                            <td class="text-left"><span class="whitespace-pre">${patternPadding}</span>${P_vis}</td>
+                            <td class="text-left">${step.step_details}</td>
+                        </tr>
+                    `;
+                });
+
+                html += `
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-4 p-4 bg-indigo-100 rounded-lg">
+                        <p class="font-bold text-indigo-700">Summary:</p>
+                        ${matches.length > 0 
+                            ? `<p>Found ${matches.length} match(es) starting at Text indices: ${matches.join(', ')}</p>` 
+                            : `<p>No full match found.</p>`}
+                    </div>
+                `;
+                tableContainer.innerHTML = html;
+            }
+
+            function runKMPSolver() {
+                const T = document.getElementById('kmp-text').value.trim();
+                const P = document.getElementById('kmp-pattern').value.trim();
+                
+                document.getElementById('kmp-lps-output').innerHTML = '';
+                document.getElementById('kmp-steps-output').innerHTML = '';
+
+                if (!T || !P) {
+                    document.getElementById('kmp-steps-output').innerHTML = '<p class="text-red-500 font-medium">Please enter both the Text and the Pattern.</p>';
+                    return;
+                }
+
+                const { steps, lps, matches } = KMPSearch(T, P);
+                
+                renderLPS(P, lps);
+                renderKMPSteps(T, P, steps, matches);
+            }
+
+            // --- CORE LCS LOGIC ---
+
+            /**
+             * Generates the DP table HTML representation for LCS.
+             */
+            function renderDPTable(X, Y, dp) {
+                const tableContainer = document.getElementById('lcs-dp-output');
+                let html = '<div class="table-container"><table class="dp-table shadow-lg bg-white">';
+
+                // 1. Header Row (Y string characters)
+                html += '<thead><tr>';
+                html += '<th class="sticky left-0 bg-gray-200 z-10"></th>'; // Corner cell
+                for (let j = 0; j <= Y.length; j++) {
+                    html += `<th class="sticky top-0 bg-gray-100 z-0">${j > 0 ? Y[j - 1].toUpperCase() : ''}</th>`;
+                }
+                html += '</tr></thead>';
+
+                // 2. Body Rows
+                html += '<tbody>';
+                for (let i = 0; i <= X.length; i++) {
+                    html += '<tr>';
+                    // Row Label (X string characters)
+                    html += `<th class="sticky left-0 bg-gray-200 z-10 border-r">${i > 0 ? X[i - 1].toUpperCase() : ''}</th>`; 
+
+                    for (let j = 0; j <= Y.length; j++) {
+                        const cellValue = dp[i][j];
+                        let cellClass = '';
+                        
+                        if (i > 0 && j > 0 && X[i - 1] === Y[j - 1] && dp[i][j] > dp[i-1][j-1]) {
+                            cellClass = 'matched';
+                        }
+                        
+                        html += `<td class="${cellClass}">${cellValue}</td>`;
+                    }
+                    html += '</tr>';
+                }
+                html += '</tbody></table></div>';
+                
+                tableContainer.innerHTML = html;
+            }
+
+
+            /**
+             * Calculates the DP table and uses recursion to find all LCS strings.
+             */
+            function find_all_lcs(s1, s2) {
+                const X = s1.toLowerCase();
+                const Y = s2.toLowerCase();
+                const m = X.length;
+                const n = Y.length;
+
+                const dp = Array(m + 1).fill(0).map(() => Array(n + 1).fill(0));
+                
+                for (let i = 1; i <= m; i++) {
+                    for (let j = 1; j <= n; j++) {
+                        if (X[i - 1] === Y[j - 1]) {
+                            dp[i][j] = 1 + dp[i - 1][j - 1];
+                        } else {
+                            dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                        }
+                    }
+                }
+                
+                const max_length = dp[m][n];
+                
+                // Render the DP table visualization
+                renderDPTable(X, Y, dp);
+                
+                const all_lcs = new Set();
+                
+                function backtrack_all_lcs(i, j, current_lcs) {
+                    if (i === 0 || j === 0) {
+                        if (current_lcs.length > 0) {
+                            all_lcs.add(current_lcs.reverse().join(''));
+                        }
+                        return;
+                    }
+
+                    if (X[i - 1] === Y[j - 1]) {
+                        backtrack_all_lcs(i - 1, j - 1, [...current_lcs, X[i - 1]]);
+                        return; 
+                    }
+
+                    if (dp[i - 1][j] === dp[i][j]) {
+                        backtrack_all_lcs(i - 1, j, [...current_lcs]);
+                    }
+
+                    if (dp[i][j - 1] === dp[i][j]) {
+                        backtrack_all_lcs(i, j - 1, [...current_lcs]);
+                    }
+                }
+
+                if (max_length > 0) {
+                    backtrack_all_lcs(m, n, []);
+                }
+                
+                return { max_length, all_lcs: Array.from(all_lcs).sort() };
+            }
+
+            function runLCSSolver() {
+                const string1 = document.getElementById('lcs-string1').value.trim();
+                const string2 = document.getElementById('lcs-string2').value.trim();
+                const resultsDiv = document.getElementById('lcs-results-output');
+                
+                resultsDiv.innerHTML = '';
+                document.getElementById('lcs-dp-output').innerHTML = '';
+
+                if (!string1 || !string2) {
+                    resultsDiv.innerHTML = '<p class="text-red-500 font-medium">Please enter both strings to analyze.</p>';
+                    return;
+                }
+
+                try {
+                    const { max_length, all_lcs } = find_all_lcs(string1, string2);
+
+                    let outputHtml = `
+                        <div class="mt-8 p-6 bg-white rounded-xl shadow-lg border border-gray-100">
+                            <h2 class="text-2xl font-extrabold text-indigo-700 border-b pb-2 mb-4">Final LCS Results</h2>
+                            <p class="text-lg mb-4">
+                                <span class="font-bold text-gray-700">Max LCS Length:</span> 
+                                <span class="text-3xl font-extrabold text-green-600">${max_length}</span>
+                            </p>
+                    `;
+                    
+                    if (max_length === 0) {
+                        outputHtml += '<p class="text-gray-500">No common subsequence found.</p>';
+                    } else {
+                        outputHtml += `
+                            <p class="text-lg font-bold text-gray-700 mt-6 mb-4">
+                                All Longest Common Subsequences (${all_lcs.length} found):
+                            </p>
+                            <div class="lcs-result-grid text-gray-800 p-4 bg-gray-50 rounded-lg">
+                        `;
+                        all_lcs.forEach(lcs => {
+                            outputHtml += `<p class="font-mono text-sm mb-1">${lcs}</p>`;
+                        });
+                        outputHtml += '</div>';
+                    }
+
+                    outputHtml += '</div>';
+                    resultsDiv.innerHTML = outputHtml;
+
+                } catch (error) {
+                    console.error("LCS calculation failed:", error);
+                    resultsDiv.innerHTML = '<p class="text-red-500 font-medium">An unexpected error occurred during calculation.</p>';
+                }
+            }
+
+            // --- UI/Mode Management ---
+
+            function getButtonClasses(isActive, positionClass = '') {
+                const baseClasses = "px-6 py-2 font-semibold transition duration-150 ease-in-out shadow-md border border-gray-300";
+                if (isActive) {
+                    return `${baseClasses} bg-indigo-600 text-white hover:bg-indigo-700 ${positionClass}`;
+                } else {
+                    return `${baseClasses} bg-gray-100 text-gray-700 hover:bg-gray-200 ${positionClass}`;
+                }
+            }
+
+            function changeMode(mode) {
+                currentMode = mode;
+                document.getElementById('lcs-section').classList.toggle('hidden', mode !== 'LCS');
+                document.getElementById('kmp-section').classList.toggle('hidden', mode !== 'KMP');
+                document.getElementById('rk-section').classList.toggle('hidden', mode !== 'RK'); // RK section added
+                
+                // Update button highlighting
+                document.getElementById('btn-lcs').className = getButtonClasses(mode === 'LCS', 'rounded-l-full');
+                document.getElementById('btn-kmp').className = getButtonClasses(mode === 'KMP', 'rounded-none border-l-0 border-r-0');
+                document.getElementById('btn-rk').className = getButtonClasses(mode === 'RK', 'rounded-r-full');
+
+                // Clear previous results when switching modes
+                document.getElementById('lcs-results-output').innerHTML = '';
+                document.getElementById('lcs-dp-output').innerHTML = '';
+                document.getElementById('kmp-lps-output').innerHTML = '';
+                document.getElementById('kmp-steps-output').innerHTML = '';
+                document.getElementById('rk-steps-output').innerHTML = '';
+                document.getElementById('rk-info-output').innerHTML = '';
+            }
+
+            // Expose runSolver and changeMode to the global scope so they can be called from HTML onclick attributes
+            window.runSolver = function() {
+                if (currentMode === 'LCS') {
+                    runLCSSolver();
+                } else if (currentMode === 'KMP') {
+                    runKMPSolver();
+                } else if (currentMode === 'RK') { 
+                    runRKSolver();
+                }
+            };
+
+            window.changeMode = changeMode;
+
+            // Initialize the UI on load
+            document.addEventListener('DOMContentLoaded', () => {
+                // Set initial mode to LCS
+                changeMode('LCS');
+                // Run solver with default values for immediate display
+                runLCSSolver();
+            });
+        })(); // End of IIFE
+    </script>
+</head>
+<body class="bg-gray-50 font-sans p-4 sm:p-8">
+
+    <div class="max-w-5xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl sm:text-5xl font-extrabold text-indigo-800 tracking-tight">
+                Algorithm Visualization Tool
+            </h1>
+            <p class="mt-3 text-lg text-gray-600">
+                A dynamic tool for visualizing String Matching (KMP, Rabin-Karp) and Subsequence (LCS) algorithms.
+            </p>
+        </header>
+
+        <main class="bg-white p-6 sm:p-8 rounded-2xl shadow-2xl border border-indigo-100">
+            <!-- Mode Selector -->
+            <div class="flex justify-center mb-8">
+                <button id="btn-lcs" onclick="changeMode('LCS')" class="px-6 py-2 rounded-l-full font-semibold transition duration-150 ease-in-out shadow-md">
+                    LCS Solver
+                </button>
+                <button id="btn-kmp" onclick="changeMode('KMP')" class="px-6 py-2 font-semibold transition duration-150 ease-in-out shadow-md">
+                    KMP Solver
+                </button>
+                <button id="btn-rk" onclick="changeMode('RK')" class="px-6 py-2 rounded-r-full font-semibold transition duration-150 ease-in-out shadow-md">
+                    Rabin-Karp Solver
+                </button>
+            </div>
+
+            <!-- LCS Section -->
+            <div id="lcs-section">
+                <h2 class="text-3xl font-extrabold text-indigo-700 mb-4 border-b pb-2">LCS Solver (Dynamic Programming)</h2>
+                
+                <!-- Input Section -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <div>
+                        <label for="lcs-string1" class="block text-sm font-medium text-gray-700 mb-1">String 1</label>
+                        <input type="text" id="lcs-string1" placeholder="e.g., Acbaed" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="Acbaed">
+                    </div>
+                    <div>
+                        <label for="lcs-string2" class="block text-sm font-medium text-gray-700 mb-1">String 2</label>
+                        <input type="text" id="lcs-string2" placeholder="e.g., Abcabe" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="Abcabe">
+                    </div>
+                </div>
+
+                <div class="text-center mb-10">
+                    <button onclick="runSolver()" class="px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full shadow-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-300 ease-in-out transform hover:scale-105">
+                        Find All LCS
+                    </button>
+                </div>
+
+                <!-- Visualization Section -->
+                <div class="mt-8">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">DP Table Visualization</h2>
+                    <p class="text-sm text-gray-500 mb-4">Highlighted cells indicate a match, resulting in an increment in the LCS length.</p>
+                    <div id="lcs-dp-output">
+                        <!-- DP table will be generated here -->
+                    </div>
+                </div>
+
+                <!-- Results Section -->
+                <div id="lcs-results-output" class="mt-8">
+                    <!-- Results will be displayed here -->
+                </div>
+            </div>
+
+            <!-- KMP Section -->
+            <div id="kmp-section" class="hidden">
+                <h2 class="text-3xl font-extrabold text-indigo-700 mb-4 border-b pb-2">KMP Solver (Knuth-Morris-Pratt)</h2>
+                
+                <!-- Input Section -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <div>
+                        <label for="kmp-text" class="block text-sm font-medium text-gray-700 mb-1">Text (T)</label>
+                        <input type="text" id="kmp-text" placeholder="e.g., ABABDABACDABABCABAB" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="ABABDABACDABABCABAB">
+                    </div>
+                    <div>
+                        <label for="kmp-pattern" class="block text-sm font-medium text-gray-700 mb-1">Pattern (P)</label>
+                        <input type="text" id="kmp-pattern" placeholder="e.g., ABABCABAB" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="ABABCABAB">
+                    </div>
+                </div>
+
+                <div class="text-center mb-10">
+                    <button onclick="runSolver()" class="px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full shadow-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-300 ease-in-out transform hover:scale-105">
+                        Run KMP Search
+                    </button>
+                </div>
+
+                <!-- KMP LPS Array Output -->
+                <div id="kmp-lps-output">
+                    <!-- LPS array visualization -->
+                </div>
+
+                <!-- KMP Steps Output -->
+                <div id="kmp-steps-output" class="mt-8">
+                    <!-- Matching steps table -->
+                </div>
+            </div>
+            
+            <!-- Rabin-Karp Section -->
+            <div id="rk-section" class="hidden">
+                <h2 class="text-3xl font-extrabold text-indigo-700 mb-4 border-b pb-2">Rabin-Karp Solver (Rolling Hash)</h2>
+                
+                <!-- Input Section -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <div>
+                        <label for="rk-text" class="block text-sm font-medium text-gray-700 mb-1">Text (T)</label>
+                        <input type="text" id="rk-text" placeholder="e.g., AABAACAADAABAABA" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="AABAACAADAABAABA">
+                    </div>
+                    <div>
+                        <label for="rk-pattern" class="block text-sm font-medium text-gray-700 mb-1">Pattern (P)</label>
+                        <input type="text" id="rk-pattern" placeholder="e.g., AABA" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out shadow-sm" value="AABA">
+                    </div>
+                </div>
+
+                <div class="text-center mb-10">
+                    <button onclick="runSolver()" class="px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full shadow-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-300 ease-in-out transform hover:scale-105">
+                        Run Rabin-Karp Search
+                    </button>
+                </div>
+
+                <!-- RK Info Output -->
+                <div id="rk-info-output">
+                    <!-- Hash info and character map will be here -->
+                </div>
+
+                <!-- RK Steps Output -->
+                <div id="rk-steps-output" class="mt-8">
+                    <!-- Matching steps table -->
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
